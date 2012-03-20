@@ -1,0 +1,219 @@
+Transaction isolation in Ruby on Rails
+======================================
+:author:    Piotr 'Qertoip' Włodarek
+:copyright: Piotr 'Qertoip Włodarek 2012
+:email:     qertoip@gmail.com
+:backend:   slidy
+:max-width: 45em
+:data-uri:
+:icons:
+
+Agenda
+------
+
+ * WTF is ACID?
+ * Getting laid with the "I" of ACID fame
+   ** Transaction isolation levels
+   ** Real world problem
+   ** How to manage isolation levels in ActiveRecord: do it yourself
+   ** You'd better use a gem...
+ * Wrap up
+
+ACID
+----
+
+ * __A__tomicity 
+ * __C__onsistency
+ * __I__solation
+ * __D__urability
+
+Atomicity
+---------
+
+__All or nothing__ even in case of hardware failure.
+
+Guaranteed by __RDBMS__.
+
+Consistency
+-----------
+
+Data are __consistent__ when they represent a real world situation. Data are __not consistent__ if they represent situation not possible in the real world.
+
+Transaction moves data from __one consistent state__ to the __other consistent state__.
+
+Responsibility of __developer__.
+
+Isolation
+---------
+
+Transaction feels like it is __the only one__ running on a database.
+
+Therefore:
+
+ * Transaction does not see changes made by other transactions.
+   ** Committed or not, doesn't matter.
+ * Its own changes are not visible to other transactions until the final commit.
+
+Guaranteed by __RDBMS__.
+
+Durability
+----------
+
+Once committed, data are __guaranteed to be persistent__ even in case of hardware failure.
+
+Guaranteed by __RDBMS__.
+
+ANSI transaction isolation levels
+---------------------------------
+
+ * __Read uncommitted__ - transaction __sees__ uncommitted INSERTs, DELETEs and UPDATEs made by other transactions.
+ * __Read committed__ - transaction __sees__ committed INSERTs, DELETEs and UPDATEs made by other transactions.
+ * __Reapeatable read__ - transaction __sees__ committed INSERTs made by other transactions.
+ * __Serializable__ - __transaction is isolated__.
+
+Example: table-based job queue
+------------------------------
+
+----------------------------------------------------------------------------------
+class QueuedJob < ActiveRecord::Base
+
+  def self.pop
+    queued_job = find_by_status( TODO )
+    if queud_job
+      queued_job.update_attribute( :status, PROCESSING )
+      return queued_job
+    else
+      return nil
+    end
+  end
+
+end
+----------------------------------------------------------------------------------
+
+[role="incremental"]
+Problem: multiple workers can pop the same job! Before first worker marks the job as being processed, the other one can easily find it still in the TODO state. Let's wrap this in a transaction!
+
+Example: table-based job queue 2.0
+----------------------------------
+
+----------------------------------------------------------------------------------
+class QueuedJob < ActiveRecord::Base
+
+  def self.pop
+    transaction do
+      queued_job = find_by_status( TODO )
+      if queud_job
+        queued_job.update_attribute( :status, PROCESSING )
+        return queued_job
+      else
+        return nil
+      end
+    end
+  end
+
+end
+----------------------------------------------------------------------------------
+
+[role="incremental"]
+Problem: multiple workers __still__ can pop the same job!
+That's because by default __transactions don't work as you mom told you__.
+
+
+Default transaction isolation levels
+------------------------------------
+
+[width="100%",frame="topbot",options="header"]
+|=======
+|RDBMS |Default isolation level | Meaning (simplified)
+|ANSI SQL Standard |Serializable |full isolation, "I'm the only one" semantic
+|SQLite |Serializable |full isolation, "I'm the only one" semantic
+|MySQL |Repeatable Read |sees INSERTs
+|PostgreSQL |Read Committed| sees INSERTs, DELETEs and UPDATEs
+|Oracle |Read Committed| sees INSERTs, DELETEs and UPDATEs
+|MS SQL Server|Read Committed| sees INSERTs, DELETEs and UPDATEs
+|=======
+
+
+Example: table-based job queue 3.0
+----------------------------------
+
+----------------------------------------------------------------------------------
+class QueuedJob < ActiveRecord::Base
+
+  def self.pop
+    transaction do
+      begin
+        connection.execute( 'SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE' )
+        unsafe_pop
+      ensure
+        connection.execute( 'SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED' )
+      end
+    end
+  end
+
+  private
+
+  def unsafe_pop; ... end
+
+end
+----------------------------------------------------------------------------------
+
+
+
+Example: table-based job queue 4.0
+----------------------------------
+
+----------------------------------------------------------------------------------
+# Gemfile
+gem 'transaction_isolation'
+----------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------
+class QueuedJob < ActiveRecord::Base
+
+  def self.pop
+    transaction do
+      isolation_level( :serializable ) do
+        unsafe_pop
+      end
+    end
+  end
+
+  private
+
+  def unsafe_pop; ... end
+
+end
+----------------------------------------------------------------------------------
+
+
+gem transaction_isolation
+-------------------------
+
+ * MySQL, PostgreSQL and SQLite supported
+ * :serializable, :repeatable_read, :read_committed, :read_uncommitted
+ * Auto-reverting to the original isolation level after the block
+ * Exception translation. All deadlocks and serialization errors are wrapped in a ActiveRecord::TransactionIsolationConflict exception
+
+
+gem transaction_retry
+---------------------
+
+ * MySQL, PostgreSQL and SQLite supported
+ * Plug and Play
+ * Aims at supremacy over deadlock_retry ;-)
+
+
+Wrap up
+-------
+
+ * Use __ACID transactions__ to avoid jail time
+ * Remember there is __no full isolation__ by default
+ * There are __4 isolation levels__ defined in ANSI SQL
+   ** read uncommitted (no isolation)
+   ** read commited (sees all committed changes)
+   ** repeatable read (sees only committed INSERTs)
+   ** serializable (one transaction at a time semantic)
+ * Helpful gems:
+   ** transaction_isolation
+   ** transaction_retry
